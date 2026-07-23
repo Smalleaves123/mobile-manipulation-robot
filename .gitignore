@@ -1,0 +1,12 @@
+.vscode/
+build/
+install/
+log/
+inter*
+iqr*
+pan*
+realsense*
+witmotion*
+**/__pycache__/
+*.pyc
+config/nav2_custom.yaml

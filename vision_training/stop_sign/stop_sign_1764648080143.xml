@@ -1,0 +1,26 @@
+<annotation>
+	<folder>stop_sign</folder>
+	<filename>stop_sign_1764648080143.jpg</filename>
+	<path>X:\下载\dataset\stop_sign\stop_sign_1764648080143.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>1280</width>
+		<height>720</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>stop_sign</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>556</xmin>
+			<ymin>370</ymin>
+			<xmax>641</xmax>
+			<ymax>449</ymax>
+		</bndbox>
+	</object>
+</annotation>

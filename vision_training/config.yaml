@@ -1,0 +1,80 @@
+# YOLO训练配置文件
+
+# 数据集配置
+dataset:
+  base_dir: "."
+  output_dir: "dataset"
+  train_ratio: 0.7      # 训练集比例
+  val_ratio: 0.2        # 验证集比例
+  test_ratio: 0.1       # 测试集比例
+  
+  # 类别定义
+  classes:
+    red_light: 0
+    green_light: 1
+    stop_sign: 2
+
+# 模型配置
+model:
+  type: "yolov5"        # yolov5 或 yolov8
+  size: "s"             # n/s/m/l/x (n最小最快, x最大最准)
+  pretrained: true      # 使用预训练权重
+  freeze_backbone: false # 冻结骨干网络
+
+# 训练配置
+training:
+  epochs: 50            # 训练轮数
+  batch_size: 16        # 批次大小
+  imgsz: 640            # 输入图像大小
+  patience: 20          # 早停耐心值
+  device: 0             # GPU设备ID (0为第一块GPU, -1为CPU)
+  workers: 4            # 数据加载工作进程数
+  
+  # 优化器配置
+  optimizer: "SGD"      # SGD 或 Adam
+  lr0: 0.01             # 初始学习率
+  momentum: 0.937       # 动量
+  weight_decay: 0.0005  # 权重衰减
+  
+  # 数据增强
+  augmentation:
+    hsv_h: 0.015        # HSV色调增强
+    hsv_s: 0.7          # HSV饱和度增强
+    hsv_v: 0.4          # HSV亮度增强
+    degrees: 10          # 旋转角度
+    translate: 0.1       # 平移比例
+    scale: 0.5           # 缩放比例
+    flipud: 0.0          # 上下翻转概率
+    fliplr: 0.5          # 左右翻转概率
+    mosaic: 1.0          # Mosaic增强比例
+    mixup: 0.0           # Mixup增强比例
+  
+  # 正则化
+  label_smoothing: 0.0  # 标签平滑
+  cos_lr: false         # 余弦学习率调度
+  
+  # 保存配置
+  save_period: -1       # 保存间隔 (-1表示只保存最佳和最后)
+  save_dir: "runs/detect"
+  project_name: "traffic_detection"
+
+# 验证配置
+validation:
+  conf_threshold: 0.5   # 置信度阈值
+  iou_threshold: 0.6    # IOU阈值
+  max_det: 300          # 最大检测数
+
+# 推理配置
+inference:
+  conf_threshold: 0.5   # 推理置信度阈值
+  iou_threshold: 0.45   # 推理IOU阈值
+  max_det: 300          # 最大检测数
+  agnostic_nms: false   # 类别无关NMS
+
+# 日志配置
+logging:
+  verbose: true         # 详细日志
+  save_plots: true      # 保存图表
+  save_json: true       # 保存JSON结果
+  save_txt: true        # 保存txt结果
+
