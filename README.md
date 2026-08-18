@@ -1,69 +1,474 @@
 # Mobile Manipulation Robot
 
-> An integrated ROS 2 mobile-manipulation robot application.
+> **A ROS 2 mobile manipulation system built and validated on a real TurtleBot4 + PX100 platform.**
 
-This repository presents a complete robot application rather than a single
-standalone algorithm. It combines autonomous navigation, a custom Nav2 global
-planner, visual perception, PX100 arm control, object grasping and placement,
-traffic-light/STOP-sign interaction, and a deployable vision-training
-pipeline. The project is designed for a TurtleBot4 + PX100 mobile-manipulation
-workcell, while keeping the application layer organized as a reusable robotics
-system.
+This project implements an integrated **perception–navigation–decision–manipulation** pipeline for a mobile manipulation robot.
 
-## System Capabilities
+The system combines:
 
-- Mobile navigation with Nav2, fixed mission waypoints, obstacle-layer
-  avoidance, replanning, and an optional custom A* planner.
-- Object grasping with ArUco, marker-free box localization through SAM or
-  HSV/PnP fallback, fixed-target compatibility mode, and optional gripper
-  state verification.
-- Arm placement with command-compatible behavior and optional joint-state
-  verification.
-- OpenVINO traffic-light and STOP-sign detection with temporal filtering and
-  stop/resume control during navigation.
-- Integrated YOLO dataset, training, and OpenVINO export tools for extending
-  the perception model.
+* TurtleBot4 autonomous navigation based on ROS 2 and Nav2
+* a custom A* global planner implemented as a Nav2 plugin
+* waypoint-based mission execution and task-state management
+* real-time obstacle avoidance and replanning through the Nav2 costmap
+* PX100 robotic-arm grasping and placement
+* ArUco-based and marker-free object localization
+* PnP-based 6D pose estimation and ROS TF coordinate transformation
+* OpenVINO-based traffic-light and STOP-sign perception
+* navigation stop/resume interaction triggered by visual perception
+* YOLO training and OpenVINO deployment tools
 
-The application capability mapping is documented in
-[Capability coverage](#capability-coverage). The original
-fixed-route and fixed-target algorithms remain available as deployment
-fallbacks, while the extended perception and planning paths are provided for
-randomized and marker-free demonstrations.
+The complete task pipeline has been tested on the **physical TurtleBot4 + PX100 robot**, including autonomous navigation, visual perception, object grasping, placement, and navigation interruption/recovery.
 
-## Implementation boundary
+---
 
-The official TurtleBot4, PX100, RealSense, pan-tilt and IMU packages are
-installed in the robot's ROS2 workspace. This repository contains the team
-application layer and keeps the original ROS scripts as deployment fallbacks.
-The sibling `../src/` directory belongs to the robot's pre-installed hardware
-workspace; it is a reference dependency and must not be modified here.
+## 1. System Overview
 
-## Project Structure
+The project is designed as a complete mobile manipulation application rather than a collection of isolated algorithms.
 
+A typical mission follows the pipeline:
+
+```text
+                    +----------------------+
+                    |   RGB / RGB-D Camera |
+                    +----------+-----------+
+                               |
+               +---------------+---------------+
+               |                               |
+               v                               v
+      Object Localization              Traffic Perception
+   ArUco / SAM / HSV + PnP           YOLO + OpenVINO
+               |                               |
+               v                               v
+         Target Pose                  Stop / Resume Signal
+               |                               |
+               v                               |
+          ROS 2 TF                            |
+               |                               |
+               v                               v
+        PX100 Base Frame              Mission State Machine
+               |                               |
+               v                               v
+       Numerical IK                   Nav2 Navigation
+               |                               |
+               v                               v
+      Grasp / Place Action <---------- Waypoint Mission
 ```
+
+At the system level, navigation first brings the robot into the manipulation workspace. Visual perception then estimates the target pose, transforms it into the manipulator base frame, and triggers grasping. After the manipulation task succeeds, the robot continues its navigation mission.
+
+---
+
+## 2. Hardware Platform
+
+The system was developed and tested using:
+
+* **TurtleBot4** mobile robot
+* **Interbotix PX100** robotic arm
+* **Intel RealSense** RGB-D camera
+* pan-tilt camera mechanism
+* Intel NUC / onboard computing platform
+
+The original TurtleBot4, PX100, RealSense, pan-tilt and related ROS 2 hardware packages are provided by their corresponding hardware stacks.
+
+This repository mainly contains the **application-level modules developed for the integrated mobile-manipulation task**.
+
+---
+
+## 3. Main Capabilities
+
+### 3.1 Autonomous Navigation
+
+The mobile base uses ROS 2 Nav2 for localization, global planning, local obstacle avoidance and motion execution.
+
+The mission layer supports:
+
+* multi-waypoint navigation
+* navigation timeout handling
+* failed-goal retry
+* pause and recovery
+* task-triggered grasping and placement
+* traffic-triggered navigation interruption
+* mission status reporting
+
+The navigation state machine coordinates the mobile base with perception and manipulation modules instead of allowing each module to run independently.
+
+---
+
+### 3.2 Custom Nav2 A* Global Planner
+
+A custom global planner is implemented according to the:
+
+```cpp
+nav2_core::GlobalPlanner
+```
+
+interface and exported through ROS 2 `pluginlib`.
+
+The planner directly operates on the Nav2 global costmap and supports:
+
+* 4-connected or 8-connected grid search
+* Euclidean heuristic
+* diagonal motion cost
+* obstacle inflation compatibility
+* costmap-based traversal penalties
+* configurable unknown-space handling
+* diagonal corner-cutting prevention
+* planning timeout
+* ROS 2 / Nav2 plugin integration
+
+The search cost is based on both geometric path length and the Nav2 costmap value:
+
+```text
+g_new =
+    g_current
+    + geometric_motion_cost
+    + costmap_penalty
+```
+
+Therefore, the planner can prefer lower-cost regions instead of considering only geometric distance.
+
+For 8-connected search, diagonal movement is additionally checked to prevent the path from passing through obstacle corners.
+
+The custom planner can be selected through the Nav2 parameter file while the original Nav2 planner remains available as a fallback.
+
+---
+
+## 4. Mission State Machine
+
+The integrated task is controlled by a ROS 2 mission state machine.
+
+The mission contains several navigation waypoints. At specific waypoints, navigation is suspended and a manipulation task is triggered.
+
+Typical execution:
+
+```text
+START
+  |
+  v
+Navigate waypoint 1
+  |
+  v
+Navigate waypoint 2
+  |
+  v
+...
+  |
+  v
+Reach grasp waypoint
+  |
+  v
+Trigger grasp task
+  |
+  v
+Wait for /grasp/success
+  |
+  v
+Continue navigation
+  |
+  v
+Reach placement waypoint
+  |
+  v
+Trigger placement task
+  |
+  v
+Wait for /place/success
+  |
+  v
+Continue mission
+  |
+  v
+MISSION COMPLETE
+```
+
+The navigation node communicates with Nav2 through the `NavigateToPose` action interface.
+
+Because ROS 2 actions are asynchronous, the mission implementation also maintains a goal sequence identifier to prevent delayed responses from an old goal from modifying the state of a newer goal.
+
+This is particularly important when a navigation goal is cancelled by a traffic signal before the original action response has returned.
+
+---
+
+## 5. Traffic-Light and STOP-Sign Interaction
+
+The project includes a visual traffic-perception pipeline for navigation interaction.
+
+The perception pipeline is:
+
+```text
+Camera
+  |
+  v
+YOLO detector
+  |
+  v
+OpenVINO inference
+  |
+  v
+Traffic-light / STOP classification
+  |
+  v
+Temporal decision filtering
+  |
+  v
+/traffic_light/stop_control
+  |
+  v
+Mission state machine
+```
+
+When a stop condition is detected, the current Nav2 navigation goal is cancelled and the robot enters a stopped state.
+
+When the stop condition disappears, the mission controller resends the current waypoint and continues the task.
+
+This implements navigation-level stop/resume behavior without directly coupling the vision node to low-level motor commands.
+
+---
+
+## 6. Object Localization
+
+The project supports multiple object-localization modes.
+
+### 6.1 ArUco-Based Localization
+
+ArUco markers can be used to provide a reliable reference target during development and controlled experiments.
+
+The detected target pose is published through ROS 2 and transformed into the PX100 base coordinate frame before grasp planning.
+
+---
+
+### 6.2 Marker-Free Box Localization
+
+The system also implements object localization without relying on artificial fiducial markers.
+
+The marker-free pipeline is designed for the known box target used in the experiment.
+
+```text
+RGB Image
+   |
+   v
+Region of Interest
+   |
+   v
+HSV-based candidate extraction
+   |
+   +-------------------+
+   |                   |
+   | SAM available     | SAM unavailable
+   v                   v
+SAM segmentation     HSV mask
+   |                   |
+   +---------+---------+
+             |
+             v
+       Object contour
+             |
+             v
+      minAreaRect
+             |
+             v
+       Four corners
+             |
+             v
+        solvePnP
+             |
+             v
+     Camera-frame pose
+```
+
+The method does **not** assume a completely unknown object.
+
+Instead, it uses task-specific priors including:
+
+* approximate object color
+* rectangular geometry
+* known physical dimensions
+* calibrated camera parameters
+
+Therefore, “marker-free” here means that the manipulation task does not require an ArUco or similar artificial marker attached to the object.
+
+---
+
+## 7. PnP Pose Estimation
+
+For a known object geometry, the detected image points and corresponding object-frame points are used to estimate the object pose.
+
+The camera projection model is:
+
+```text
+s [u v 1]^T = K [R | t] [X Y Z 1]^T
+```
+
+where:
+
+* `(X, Y, Z)` is a known point in the object coordinate frame
+* `(u, v)` is its detected image coordinate
+* `K` is the calibrated camera intrinsic matrix
+* `R` and `t` represent the object pose relative to the camera
+
+OpenCV `solvePnP` is used to recover the pose.
+
+The estimated target is subsequently transformed into the robot-arm coordinate frame through ROS 2 TF.
+
+---
+
+## 8. Coordinate Transformation
+
+Visual perception produces a target pose in the camera coordinate frame, while robotic-arm control requires the target in the PX100 base frame.
+
+The required transformation can be written as:
+
+```text
+T_base_object =
+    T_base_camera
+    *
+    T_camera_object
+```
+
+ROS 2 TF is used to query the camera-to-arm transformation.
+
+The resulting pose is checked against the manipulator workspace before inverse kinematics is executed.
+
+---
+
+## 9. Target Stability Filtering
+
+Directly executing a grasp from a single visual frame can be unreliable because pose estimation may fluctuate.
+
+The grasping module therefore performs multi-frame target stability checking.
+
+A target is accepted only after its estimated three-dimensional position remains sufficiently stable over consecutive frames.
+
+The default implementation uses approximately:
+
+```text
+position tolerance: 0.02 m
+stable frames:      6
+```
+
+This acts as a simple perception gate before manipulation starts.
+
+The purpose is not general object tracking, but to determine whether the current visual pose is sufficiently stable for a discrete grasp operation.
+
+---
+
+## 10. PX100 Grasping
+
+After the target is transformed into the PX100 base frame, the grasping module generates a sequence of manipulation targets.
+
+Typical grasp sequence:
+
+```text
+Target detection
+      |
+      v
+Workspace check
+      |
+      v
+Hover target
+      |
+      v
+Numerical IK
+      |
+      v
+Move above object
+      |
+      v
+Lower end effector
+      |
+      v
+Close gripper
+      |
+      v
+Lift object
+      |
+      v
+Publish grasp result
+```
+
+The manipulator uses numerical inverse kinematics based on the PX100 kinematic model.
+
+Multiple initial joint configurations are used to improve solver robustness.
+
+A previously successful solution can also be reused as a warm start for the next IK calculation.
+
+If the target is unreachable or the IK solver fails, the state machine can return to target acquisition instead of blindly executing the motion.
+
+---
+
+## 11. Placement
+
+The placement module controls the PX100 to move the object to a predefined placement configuration.
+
+The placement task is coordinated with the main mission through ROS 2 topics.
+
+The navigation state machine continues only after receiving the placement completion signal.
+
+This ensures explicit synchronization between navigation and manipulation.
+
+---
+
+## 12. Real-Robot Validation
+
+The integrated system has been validated on the physical TurtleBot4 + PX100 platform.
+
+The hardware experiments cover the complete application chain:
+
+```text
+Navigation
+    ↓
+Obstacle avoidance
+    ↓
+Traffic perception
+    ↓
+Stop / resume
+    ↓
+Reach manipulation area
+    ↓
+Object localization
+    ↓
+TF transformation
+    ↓
+Inverse kinematics
+    ↓
+Grasp
+    ↓
+Continue navigation
+    ↓
+Placement
+```
+
+The project therefore focuses not only on individual algorithm implementation, but also on practical issues that appear when multiple robotic subsystems are combined on real hardware, including:
+
+* coordinate-frame consistency
+* visual-pose fluctuation
+* manipulator workspace constraints
+* asynchronous ROS 2 actions
+* navigation interruption and recovery
+* perception/manipulation synchronization
+* task timeout and retry handling
+
+---
+
+## 13. Project Structure
+
+```text
 mobile-manipulation-robot/
 │
-├── arm/                # Robotic arm control and grasping scripts
+├── arm/
 │   ├── arm_controller.py
 │   ├── grasping_ok.py
 │   ├── place_the_box.py
-│   ├── ...
+│   └── ...
 │
-├── aruco_tracker/      # Optional ROS 2 ArUco tracker package
-│   ├── aruco_tracker/
-│   │   └── aruco_node.py
-│   ├── ...
+├── aruco_tracker/
+│   └── aruco_tracker/
+│       └── aruco_node.py
 │
-├── detection/          # Object detection and traffic light recognition
-│   ├── inference_nuc.py        # Inference script for NUC
-│   ├── visual_detection_ros.py # Non-aruco marker detection
-│   ├── ...
-│
-├── vision_training/    # 视觉数据集、训练脚本、训练结果与部署导出
-│   ├── dataset/
-│   ├── runs/
-│   ├── train_yolo.py
-│   └── export_openvino.py
+├── detection/
+│   ├── inference_nuc.py
+│   ├── visual_detection_ros.py
+│   └── ...
 │
 ├── my_nav2_planner/
 │   ├── CMakeLists.txt
@@ -75,212 +480,228 @@ mobile-manipulation-robot/
 │   └── src/
 │       └── my_astar_planner.cpp
 │
-├── planning/           # Main navigation package
+├── planning/
 │   ├── scripts/
-│   │   ├── navigation.py      # Full-process navigation
-│   │   ├── simple_nav.py      # Single-point navigation
-│   │   ├── stop_at_rviz.py    # RViz navigation with traffic light support
-│   │   └── read_pose.py       # Read waypoint data
+│   │   ├── navigation.py
+│   │   ├── navigation_full.py
+│   │   ├── simple_nav.py
+│   │   ├── stop_at_rviz.py
+│   │   └── read_pose.py
+│   │
 │   ├── launch/
-│   │   ├── navigation.launch.py   # Main navigation launch file
-│   │   ├── navigation_full.launch.py # Navigation + task handshake
-│   │   ├── supplement.launch.py   # Arm and perception launch
-│   │   └── full_project.launch.py # Single complete mission entry point
-│   ├── map/                # Map files
-│   ├── ...
+│   │   ├── navigation.launch.py
+│   │   ├── navigation_full.launch.py
+│   │   ├── supplement.launch.py
+│   │   └── full_project.launch.py
+│   │
+│   └── map/
 │
-├── yolo_detection/     # Collection of YOLO dataset
+├── vision_training/
+│   ├── dataset/
+│   ├── runs/
+│   ├── train_yolo.py
+│   └── export_openvino.py
+│
+├── yolo_detection/
 │   └── collection.py
 │
-├── yolo_test/          # YOLO test models and results
+├── yolo_test/
 │   ├── yolov8n.pt
 │   └── yolov8n_openvino_model/
 │
-└── tools/
-    └── merge_nav2_params.py # Generate a custom-planner Nav2 config
+├── tools/
+│   └── merge_nav2_params.py
+│
+└── README.md
 ```
 
-## Common Scripts and Launch Commands
+---
 
-### Automatic Navigation Process
-```bash
-ros2 launch iqr_tb4_bringup bringup.launch.py
-ros2 launch planning navigation.launch.py
-ros2 launch planning supplement.launch.py
-```
+## 14. Running the Robot
 
-### 1. System Bringup
-```bash
-ros2 launch iqr_tb4_bringup bringup.launch.py
-```
-
-### 2. Start Arm Controller
-```bash
-python3 arm/arm_controller.py
-```
-
-### 3. Start Grasping/Placing
-```bash
-python3 arm/grasping_ok.py
-python3 arm/place_the_box.py
-```
-
-### 4. Navigation Process
-```bash
-ros2 launch iqr_tb4_navigation localization.launch.py map:=planning/map/map.yaml
-ros2 launch iqr_tb4_navigation nav2.launch.py
-python3 planning/scripts/navigation.py
-```
-
-### 5. Start Traffic Light Detection
-```bash
-python3 detection/inference_nuc.py
-```
-
-### 6. Vision training and deployment
-
-训练项目已经和机器人应用代码放在同一个应用文件夹内：
+### 14.1 Build the workspace
 
 ```bash
-cd /home/tony/ros2_ws/src/mobile-manipulation-robot/vision_training
-python3 train_yolo.py
+cd ~/ros2_ws
+colcon build
+source install/setup.bash
 ```
 
-训练完成后，将 YOLO 权重导出为机器人端使用的 OpenVINO 模型：
+---
 
-```bash
-python3 export_openvino.py \
-  --weights runs/detect/traffic_detection/weights/best.pt
-```
-
-导出结果写入 `detection/best_openvino_model/`，由
-`detection/inference_nuc.py` 在机器人上加载。训练依赖只属于
-`vision_training`，机器人运行主任务不需要安装完整训练环境。
-
-## Complete mission entry point
-
-The legacy fixed-route node remains available as
-`planning/scripts/navigation.py`. The complete mission adapter is
-`planning/scripts/navigation_full.py`. For the complete application, use the
-single launch entry point:
+### 14.2 Start TurtleBot4 hardware
 
 ```bash
 ros2 launch iqr_tb4_bringup bringup.launch.py
+```
+
+---
+
+### 14.3 Start the complete mission
+
+```bash
 ros2 launch planning full_project.launch.py
 ```
 
-The application launch starts the RealSense and pan-tilt drivers by default,
-then the traffic detector, arm task nodes, Nav2, and the mission state
-machine. Component switches are also exposed for staged demonstrations. If
-either driver is already running, disable only that part:
+The complete launch configuration can start:
+
+* camera drivers
+* pan-tilt drivers
+* traffic perception
+* robotic-arm task nodes
+* Nav2
+* mission state machine
+
+If part of the hardware stack is already running, individual modules can be disabled through launch parameters.
+
+Example:
 
 ```bash
 ros2 launch planning full_project.launch.py \
-  start_camera:=false start_pan_tilt:=false
+    start_camera:=false \
+    start_pan_tilt:=false
 ```
 
-The old two-launch sequence remains available for staged debugging.
+---
 
-The default route still uses the existing tested waypoints. The mission node
-pauses and resumes the same waypoint when `/traffic_light/stop_control`
-changes, waits for `/grasp/success` after waypoint 4, and waits for
-`/place/success` after waypoint 5.
+## 15. Using the Custom A* Planner
 
-`navigation_full.launch.py` forwards the official `iqr_tb4_navigation` `params_file`
-argument. To use `MyAStarPlanner`, first build a project-side copy of the
-vendor parameters. The helper reads the installed vendor file and never
-modifies it:
+Build the planner and navigation packages:
 
 ```bash
-cd /home/tony/ros2_ws
+cd ~/ros2_ws
 colcon build --packages-select planning my_nav2_planner
 source install/setup.bash
-cd /home/tony/ros2_ws/src/mobile-manipulation-robot
+```
+
+Generate a project-side Nav2 configuration:
+
+```bash
+cd ~/ros2_ws/src/mobile-manipulation-robot
+
 python3 tools/merge_nav2_params.py \
-  --output /home/tony/ros2_ws/src/mobile-manipulation-robot/config/nav2_custom.yaml
+    --output config/nav2_custom.yaml
+```
+
+Start the complete system using the custom planner:
+
+```bash
 ros2 launch planning full_project.launch.py \
-  params_file:=/home/tony/ros2_ws/src/mobile-manipulation-robot/config/nav2_custom.yaml
+    params_file:=$(pwd)/config/nav2_custom.yaml
 ```
 
-The launch file defaults to the vendor `nav2.yaml`, so the original planner
-remains the safe fallback until the custom planner parameter file is selected.
+The original Nav2 configuration can still be used when the custom planner is not selected.
 
-## Grasp vision modes
+---
 
-`arm/grasping_ok.py` keeps ArUco as the default deployment mode:
+## 16. Grasp Vision Modes
+
+### ArUco mode
 
 ```bash
-python3 arm/grasping_ok.py --ros-args -p vision_mode:=aruco
+python3 arm/grasping_ok.py \
+    --ros-args \
+    -p vision_mode:=aruco
 ```
 
-The same state machine can start the existing box detector instead:
+### Marker-free box mode
 
 ```bash
-python3 arm/grasping_ok.py --ros-args -p vision_mode:=box
+python3 arm/grasping_ok.py \
+    --ros-args \
+    -p vision_mode:=box
 ```
 
-For a complete marker-free fallback demonstration, use `vision_mode:=auto`.
-The node tries ArUco first, then automatically restarts with the SAM/HSV/PnP
-box pipeline if no stable marker target is found:
+### Automatic mode
 
 ```bash
-ros2 launch planning full_project.launch.py grasp_vision_mode:=auto
+ros2 launch planning full_project.launch.py \
+    grasp_vision_mode:=auto
 ```
 
-The box detector first uses SAM when its checkpoint is available. If the
-checkpoint or `segment_anything` is absent, it automatically falls back to
-the existing HSV white-region mask and PnP pipeline, so the PoseArray topic
-and grasp state machine remain usable on the robot.
+In automatic mode, the system can first attempt the standard visual target and switch to the marker-free box-localization pipeline when necessary.
 
-For a fixed-object fallback, enable it explicitly and set the calibrated
-target in the PX100 base frame:
+---
+
+## 17. Vision Training
+
+The repository also contains the dataset preparation, YOLO training and deployment pipeline used by the traffic-perception module.
+
+Train the detector:
 
 ```bash
-python3 arm/grasping_ok.py --ros-args \
-  -p allow_fixed_fallback:=true \
-  -p fixed_target_x:=0.20 -p fixed_target_y:=0.0 -p fixed_target_z:=0.05
+cd vision_training
+python3 train_yolo.py
 ```
 
-The default `grasp_verification:=commanded` preserves the original behavior.
-On the robot, `grasp_verification:=joint_state` enables an optional heuristic
-using `/joint_states` (configurable for older images); this is better than
-unconditional success but is not a force/tactile sensor measurement.
+Export the trained model to OpenVINO:
 
-Placement has the same compatibility boundary: `place_verification:=commanded`
-keeps the legacy command-complete behavior, while
-`place_verification:=joint_state` verifies that the gripper opened before
-publishing `/place/success=True`. This is actuator-state verification, not
-direct object-in-bin perception.
+```bash
+python3 export_openvino.py \
+    --weights runs/detect/traffic_detection/weights/best.pt
+```
 
-The complete navigator also has a per-waypoint navigation timeout and retry
-limit. It stops with an explicit timeout if navigation, grasping, or placing
-never completes, instead of waiting forever. It
-publishes `/mission/status` and `/mission/success` for final demonstrations
-and failure diagnosis.
-抓取节点还发布 `/grasp/status`，会区分视觉搜索超时、IK 失败、夹爪核验失败
-和成功完成，便于现场判断问题是在视觉、运动学还是夹爪阶段。
+The OpenVINO model can then be deployed on the robot-side computing platform for inference.
 
-## Capability coverage
+This separates the model-training environment from the lightweight robot deployment environment.
 
-| Capability | Application path | Status |
-|---|---|---|
-| Fixed-obstacle navigation | Nav2 waypoint mission with the original map and route | covered |
-| Random-obstacle navigation | Nav2 costmap obstacle avoidance and replanning | implemented; requires physical validation |
-| Custom global planner | `my_nav2_planner/MyAStarPlanner` plugin | implemented; enable it in the robot Nav2 parameter file |
-| Fixed-position pick & place | Visual grasp with explicit fixed fallback, then place | covered |
-| Random-position pick & place | ArUco target stability filtering and box PnP mode | implemented; requires physical calibration |
-| Marker-free pick & place | `grasp_vision_mode:=box`, SAM or HSV/PnP fallback | implemented; requires physical calibration |
-| Traffic-light/STOP-sign detection | OpenVINO detector and temporal stop decision | covered |
-| Stop/resume during navigation | `/traffic_light/stop_control` cancels and resumes the same waypoint | covered |
+---
 
-The randomized capabilities are described as “implemented” rather than
-guaranteed: final behavior still depends on physical calibration and the
-actual obstacle/object arrangement.
+## 18. Design Scope
 
-## Local verification boundary
+This project follows a modular mobile-manipulation architecture.
 
-This macOS checkout does not contain the robot's ROS2 runtime, so local
-verification is limited to Python syntax compilation and static inspection.
-ROS actions, TF, OpenVINO/SAM loading, the Nav2 plugin build and real hardware
-still need to be verified on the NUC. The fixed route and fixed grasp target
-remain available as deployment fallbacks.
+The current implementation intentionally separates:
+
+* global mobile navigation
+* local obstacle avoidance
+* visual object localization
+* robotic-arm manipulation
+
+The custom A* planner is a **2D costmap-based global planner**. Dynamic obstacle response is mainly handled through Nav2 costmap updates, local control and replanning; the project does not claim an explicit space-time dynamic-obstacle prediction algorithm.
+
+Similarly, marker-free localization is a task-oriented perception solution using geometric and appearance priors rather than a general-purpose category-level 6D object-pose estimator.
+
+The manipulation architecture freezes the mobile base before grasp execution rather than jointly optimizing base and manipulator motion.
+
+These choices keep the system robust and interpretable for the target physical-robot task while providing clear interfaces for future extensions.
+
+---
+
+## 19. Possible Extensions
+
+Several extensions can further improve the system:
+
+* depth-assisted object pose estimation
+* visual servoing for final grasp alignment
+* force/tactile-based grasp verification
+* MoveIt 2 based collision-aware arm planning
+* joint mobile-base and manipulator planning
+* explicit dynamic-obstacle trajectory prediction
+* behavior-tree based task management
+* stronger failure recovery policies
+* general-purpose 6D object-pose estimation
+
+---
+
+## 20. Summary
+
+This project demonstrates an end-to-end mobile manipulation system on a real TurtleBot4 + PX100 platform.
+
+Rather than focusing only on a single planning or perception algorithm, the project integrates:
+
+```text
+Perception
+   +
+Navigation
+   +
+Task Decision
+   +
+Coordinate Transformation
+   +
+Manipulation
+   =
+Real-Robot Closed-Loop Mobile Manipulation
+```
+
+The main goal of the project is to explore how perception, planning and control modules can be organized into a reliable autonomous robotic system and validated through physical robot experiments.
